@@ -150,7 +150,6 @@ python main.py --filter-packages "CriticalVulnerabilityCount>0"
 
 # Only outdated packages
 python main.py --filter-packages "Outdated=true"
-```
 
 # Only malicious packages
 python main.py --filter-packages "IsMalicious=true"
