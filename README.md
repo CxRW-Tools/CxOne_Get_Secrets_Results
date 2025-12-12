@@ -152,6 +152,10 @@ python main.py --filter-packages "CriticalVulnerabilityCount>0"
 python main.py --filter-packages "Outdated=true"
 ```
 
+# Only malicious packages
+python main.py --filter-packages "IsMalicious=true"
+```
+
 ## Output
 
 The tool generates three main files in the output directory (plus an optional fourth file if there are failures):
