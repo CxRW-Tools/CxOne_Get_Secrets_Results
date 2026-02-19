@@ -1,1 +1,1 @@
-"""CxOne Tool Template Package.""" 
+"""CxOne Secrets Results tool."""

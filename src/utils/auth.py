@@ -5,7 +5,7 @@ import requests
 class AuthManager:
     def __init__(self, base_url, tenant_name, api_key, debug=False):
         """Initialize the authentication manager.
-        
+
         Args:
             base_url (str): The base URL for the CxOne instance
             tenant_name (str): The tenant name
@@ -39,29 +39,29 @@ class AuthManager:
         """Authenticate with the API key and get a new token."""
         if self.debug:
             print("Authenticating with API key...")
-            
+
         headers = {'Content-Type': 'application/x-www-form-urlencoded'}
         data = {
             'grant_type': 'refresh_token',
             'client_id': 'ast-app',
             'refresh_token': self.api_key
         }
-        
+
         try:
             response = requests.post(self.auth_url, headers=headers, data=data)
             response.raise_for_status()
-            
+
             json_response = response.json()
             self.auth_token = json_response.get('access_token')
             if not self.auth_token:
                 raise ValueError("No access token in response")
-                
+
             expires_in = json_response.get('expires_in', 600)
             self.token_expiration = time.time() + expires_in
 
             if self.debug:
                 print("Authentication successful")
-                
+
         except requests.exceptions.RequestException as e:
             print(f"Authentication error: {e}")
             sys.exit(1)
@@ -74,4 +74,4 @@ class AuthManager:
         return {
             'Authorization': f'Bearer {self.ensure_authenticated()}',
             'Content-Type': 'application/json'
-        } 
+        }

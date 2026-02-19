@@ -1,0 +1,94 @@
+"""Collect secrets results (sscs-secret-detection) for each scan."""
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from src.operations.base import Operation
+
+SECRETS_TYPE = 'sscs-secret-detection'
+CSV_HEADER = ['projectId', 'projectName', 'scanId', 'id', 'firstFoundAt', 'foundAt', 'ruleName', 'fileName', 'line']
+
+def _result_to_row(scan, item):
+    """Build a CSV row dict from a single result item and scan context."""
+    data = item.get('data') or {}
+    return {
+        'projectId': scan.project_id,
+        'projectName': scan.project_name,
+        'scanId': scan.scan_id,
+        'id': item.get('id', ''),
+        'firstFoundAt': item.get('firstFoundAt', ''),
+        'foundAt': item.get('foundAt', ''),
+        'ruleName': data.get('ruleName', ''),
+        'fileName': data.get('fileName', ''),
+        'line': data.get('line', ''),
+    }
+
+class SecretsResultsCollector(Operation):
+    """For each scan, fetch /api/results and filter sscs-secret-detection; produce rows for CSV."""
+
+    def execute(self, scans, exception_reporter=None):
+        """
+        Returns:
+            list of (scan, rows) where rows is list of dicts with CSV_HEADER keys.
+        """
+        results_per_scan = []
+        total_secrets = 0
+        error_count = 0
+        max_workers = getattr(self.config, 'max_workers_results', 10)
+
+        if self.logger:
+            self.logger.log("Collecting secrets results for " + str(len(scans)) + " scans...")
+        if self.config.debug:
+            print("\nCollecting secrets results for", len(scans), "scans...")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_scan = {
+                executor.submit(self._fetch_secrets_for_scan, scan, exception_reporter): scan
+                for scan in scans
+            }
+            for future in as_completed(future_to_scan):
+                scan = future_to_scan[future]
+                try:
+                    rows = future.result()
+                    if rows is None:
+                        error_count += 1
+                        continue
+                    results_per_scan.append((scan, rows))
+                    total_secrets += len(rows)
+                    if self.logger:
+                        self.logger.log("  " + scan.project_name + " (scan " + scan.scan_id + "): " + str(len(rows)) + " secrets")
+                    if self.progress:
+                        self.progress.update(1)
+                        self.progress.set_postfix(secrets=total_secrets)
+                except Exception as e:
+                    error_count += 1
+                    if self.logger:
+                        self.logger.log("ERROR: Failed to collect results for " + scan.project_name + ": " + str(e))
+                    if exception_reporter:
+                        exception_reporter.add_results_error(scan.project_name, scan.scan_id, str(e))
+                    if self.progress:
+                        self.progress.update(1)
+
+        if self.logger:
+            self.logger.log("Collected " + str(total_secrets) + " secrets from " + str(len(results_per_scan)) + " scans (" + str(error_count) + " errors)")
+        if self.config.debug:
+            print("Collected", total_secrets, "secrets from", len(results_per_scan), "scans")
+        return results_per_scan
+
+    def _fetch_secrets_for_scan(self, scan, exception_reporter):
+        """Fetch all paginated results for scan, filter by type sscs-secret-detection. Returns list of row dicts or None on error."""
+        try:
+            params = {'scan-id': scan.scan_id}
+            all_items = self.api_client.get_paginated('/api/results', params=params)
+            if all_items is None:
+                if exception_reporter:
+                    exception_reporter.add_results_error(scan.project_name, scan.scan_id, "API returned no data")
+                return None
+            rows = []
+            for item in all_items:
+                if item.get('type') != SECRETS_TYPE:
+                    continue
+                rows.append(_result_to_row(scan, item))
+            return rows
+        except Exception as e:
+            if exception_reporter:
+                exception_reporter.add_results_error(scan.project_name, scan.scan_id, str(e))
+            return None

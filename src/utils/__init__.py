@@ -1,1 +1,1 @@
-"""Utility modules for CxOne Tool Template.""" 
+"""Utility modules for CxOne Secrets Results tool."""

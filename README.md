@@ -1,8 +1,26 @@
-# CxOne SCA Package Aggregator
+# CxOne Tools
 
-A comprehensive tool for aggregating SCA (Software Composition Analysis) package reports from all project-branch combinations in Checkmarx One.
+This repository contains **CxOne Secrets Results** (at repo root) and a reference **CxOne SCA Package Aggregator** (in `Example/`).
 
-## Overview
+---
+
+## CxOne Secrets Results (root)
+
+Collects secrets scan results from all projects and outputs a single CSV.
+
+1. Discovers all projects; for each, finds the most recent **Completed** scan with secrets (microengines `2ms: true`).
+2. Fetches all `sscs-secret-detection` results per scan via `/api/results?scan-id=...`.
+3. Writes CSV: **projectId, projectName, scanId, id, firstFoundAt, foundAt, ruleName, fileName, line**.
+
+**Run:** `pip install -r requirements.txt` then `python main.py` (use `.env` with `CXONE_BASE_URL`, `CXONE_TENANT`, `CXONE_API_KEY`). Options: `--env-file`, `--debug`, `--output-dir`, `--max-workers`.
+
+---
+
+## CxOne SCA Package Aggregator (Example/)
+
+A comprehensive tool for aggregating SCA package reports from all project-branch combinations in Checkmarx One.
+
+### Overview
 
 This tool automates the process of:
 1. Discovering all projects in your CxOne tenant

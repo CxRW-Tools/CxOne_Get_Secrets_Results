@@ -1,1 +1,1 @@
-"""Operation modules for CxOne Tool Template.""" 
+"""Operations for CxOne Secrets Results tool."""

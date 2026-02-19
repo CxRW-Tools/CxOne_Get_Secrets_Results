@@ -1,105 +1,74 @@
 #!/usr/bin/env python3
 """
-CxOne SCA Package Aggregator
+CxOne Secrets Results
 
-Aggregates SCA package reports from all project-branch combinations in CxOne.
+For each project, finds the most recent scan with successful secrets (microengines 2ms) scan,
+collects all sscs-secret-detection results, and outputs a single CSV.
 """
 
 import sys
 import argparse
 import time
-from datetime import datetime
+import csv
+import os
+
 from src.utils.auth import AuthManager
 from src.utils.config import Config
 from src.utils.api_client import APIClient
 from src.utils.progress import ProgressTracker, StageTracker
 from src.utils.file_manager import FileManager
-from src.utils.csv_streamer import CSVStreamer
 from src.utils.exception_reporter import ExceptionReporter
 from src.utils.debug_logger import DebugLogger
 from src.operations.project_discovery import ProjectDiscovery
-from src.operations.branch_discovery import BranchDiscovery
-from src.operations.scan_finder import ScanFinder
-from src.operations.report_generator import ReportGenerator
-from src.operations.data_merger import DataMerger
+from src.operations.secrets_scan_finder import SecretsScanFinder
+from src.operations.secrets_results_collector import SecretsResultsCollector, CSV_HEADER
+
 
 def parse_args():
-    """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description='CxOne SCA Package Aggregator - Collect SCA packages from all project-branch combinations'
+        description='CxOne Secrets Results - Collect secrets scan results from all projects'
     )
     parser.add_argument('--env-file', help='Path to environment file (default: .env)')
     parser.add_argument('--base-url', help='Region Base URL')
     parser.add_argument('--tenant-name', help='Tenant name')
     parser.add_argument('--api-key', help='API key for authentication')
     parser.add_argument('--debug', action='store_true', help='Enable debug output')
-    parser.add_argument('--max-workers', type=int, help='Maximum worker threads for report generation')
+    parser.add_argument('--max-workers', type=int, help='Maximum worker threads for results collection')
     parser.add_argument('--output-dir', help='Output directory for final CSV')
-    parser.add_argument('--retry-failed', help='Path to failed reports CSV file to retry only those scans')
-    parser.add_argument('--filter-packages', help='Filter packages by field=value with OR (||) and AND (&&) logic support. Examples: "PackageRepository=npm", "PackageRepository=npm||pypi", "CriticalVulnerabilityCount>0"')
     return parser.parse_args()
 
-def load_failed_scans(failed_csv_path):
-    """Load scans from a failed reports CSV file.
-    
-    Args:
-        failed_csv_path (str): Path to the failed reports CSV file
-        
-    Returns:
-        list: List of Scan objects from the CSV
-        
-    Raises:
-        FileNotFoundError: If the CSV file doesn't exist
-        ValueError: If the CSV format is invalid
-    """
-    import csv
-    import os
-    from src.models.scan import Scan
-    
-    if not os.path.exists(failed_csv_path):
-        raise FileNotFoundError(f"Failed reports file not found: {failed_csv_path}")
-    
-    scans = []
-    
-    # Validate file path is safe for retry functionality
-    if not failed_csv_path or not isinstance(failed_csv_path, str):
-        raise ValueError("Invalid failed reports file path")
-    
-    with open(failed_csv_path, 'r', encoding='utf-8') as f:  # nosec B113 - validated path for retry functionality
-        reader = csv.DictReader(f)
-        
-        # Validate header
-        expected_headers = {'ProjectName', 'ProjectId', 'BranchName', 'ScanId', 'ScanDate'}
-        actual_headers = set(reader.fieldnames or [])
-        
-        if not expected_headers.issubset(actual_headers):
-            missing = expected_headers - actual_headers
-            raise ValueError(f"Invalid CSV format. Missing headers: {missing}")
-        
-        for row in reader:
-            scan = Scan(
-                scan_id=row['ScanId'],
-                project_id=row['ProjectId'],
-                project_name=row['ProjectName'],
-                branch_name=row['BranchName'],
-                created_at=row['ScanDate']
-            )
-            scans.append(scan)
-    
-    return scans
+
+def write_secrets_csv(output_path, results_per_scan):
+    """Write a single CSV with header CSV_HEADER and one row per secret."""
+    total_rows = 0
+    with open(output_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_HEADER)
+        writer.writeheader()
+        for _scan, rows in results_per_scan:
+            for row in rows:
+                writer.writerow(row)
+                total_rows += 1
+    return total_rows
+
+
+def get_file_size(file_path):
+    try:
+        size_bytes = os.path.getsize(file_path)
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.1f} TB"
+    except Exception:
+        return "Unknown"
+
 
 def main():
-    """Main entry point."""
     start_time = time.time()
-    
-    # Parse arguments
     args = parse_args()
-    
-    # Initialize configuration (with optional custom env file)
-    env_file = args.env_file if hasattr(args, 'env_file') and args.env_file else '.env'
+
+    env_file = getattr(args, 'env_file', None) or '.env'
     config = Config.from_env(env_file)
-    
-    # Override with command line arguments if provided
     if args.base_url:
         config.base_url = args.base_url
     if args.tenant_name:
@@ -109,30 +78,23 @@ def main():
     if args.debug:
         config.debug = args.debug
     if args.max_workers:
-        config.max_workers_reports = args.max_workers
+        config.max_workers_results = args.max_workers
     if args.output_dir:
         config.output_directory = args.output_dir
-    if args.filter_packages:
-        config.filter_packages = args.filter_packages
 
-    # Validate configuration
     is_valid, error = config.validate()
     if not is_valid:
-        print(f"Configuration error: {error}")
+        print("Configuration error:", error)
         sys.exit(1)
 
-    print("="*120)
-    print("CxOne SCA Package Aggregator")
-    print("="*120)
-    print(f"Tenant: {config.tenant_name}")
-    print(f"Base URL: {config.base_url}")
-    print(f"Output Directory: {config.output_directory}")
-    print(f"Max Report Workers: {config.max_workers_reports}")
-    if config.filter_packages:
-        print(f"Package Filter: {config.filter_packages}")
-    print("="*120)
+    print("=" * 120)
+    print("CxOne Secrets Results")
+    print("=" * 120)
+    print("Tenant:", config.tenant_name)
+    print("Base URL:", config.base_url)
+    print("Output Directory:", config.output_directory)
+    print("=" * 120)
 
-    # Initialize auth manager
     auth_manager = AuthManager(
         base_url=config.base_url,
         tenant_name=config.tenant_name,
@@ -141,271 +103,122 @@ def main():
     )
 
     try:
-        # Verify authentication works
         auth_manager.ensure_authenticated()
-        
         if config.debug:
-            print("\n✓ Successfully authenticated with CxOne")
-        
-        # Initialize utilities
+            print("\nSuccessfully authenticated with CxOne")
+
         file_manager = FileManager(config, config.debug)
-        
-        # Setup directories
         file_manager.setup_directories()
-        
-        # Initialize debug logger (always active, writes to file)
+
         debug_log_path = file_manager.get_debug_log_path()
         debug_logger = DebugLogger(debug_log_path, console_debug=config.debug)
-        debug_logger.log(f"CxOne SCA Package Aggregator - Debug Log")
-        debug_logger.log(f"Tenant: {config.tenant_name}")
-        debug_logger.log(f"Base URL: {config.base_url}")
-        debug_logger.log(f"Max Report Workers: {config.max_workers_reports}")
-        debug_logger.log("="*120)
-        
+        debug_logger.log("CxOne Secrets Results - Debug Log")
+        debug_logger.log("Tenant: " + config.tenant_name)
+        debug_logger.log("Base URL: " + config.base_url)
+
         api_client = APIClient(config.base_url, auth_manager, config, config.debug, debug_logger)
         progress_tracker = ProgressTracker(config.debug)
         stage_tracker = StageTracker(config.debug)
-        csv_streamer = CSVStreamer(config.debug, debug_logger)
         exception_reporter = ExceptionReporter()
-        
-        # Check if in retry mode
-        if args.retry_failed:
-            print(f"\n⚠️  RETRY MODE: Loading scans from {args.retry_failed}")
-            debug_logger.log(f"RETRY MODE: Loading failed scans from {args.retry_failed}")
-            scans = load_failed_scans(args.retry_failed)
-            print(f"✓ Loaded {len(scans)} failed scans for retry\n")
-            debug_logger.log(f"Loaded {len(scans)} scans for retry")
-            
-            # Set dummy values for summary statistics
-            projects = []
-            branches = []
-        else:
-            # ========================================
-            # Stage 1: Discover Projects
-            # ========================================
-            stage_tracker.start_stage("Stage 1: Discovering Projects")
-            debug_logger.log("Starting Stage 1: Project Discovery")
-            
-            project_discovery = ProjectDiscovery(config, auth_manager, api_client, progress_tracker, debug_logger)
-            projects = project_discovery.execute()
-            
-            if not projects:
-                print("No projects found. Exiting.")
-                debug_logger.log("ERROR: No projects found")
-                debug_logger.close()
-                sys.exit(0)
-            
-            debug_logger.log(f"Found {len(projects)} projects")
-            stage_tracker.end_stage(
-                "Stage 1: Discovering Projects",
-                total_projects=len(projects)
-            )
-            
-            # ========================================
-            # Stage 2: Discover Branches
-            # ========================================
-            stage_tracker.start_stage("Stage 2: Discovering Branches")
-            debug_logger.log(f"Starting Stage 2: Branch Discovery for {len(projects)} projects")
-            
-            progress_bar = progress_tracker.create_bar(len(projects), "Fetching branches", "projects")
-            
-            branch_discovery = BranchDiscovery(config, auth_manager, api_client, progress_tracker, debug_logger)
-            branches = branch_discovery.execute(projects)
-            
-            progress_tracker.close()
-            
-            if not branches:
-                print("No branches found. Exiting.")
-                debug_logger.log("ERROR: No branches found")
-                debug_logger.close()
-                sys.exit(0)
-            
-            debug_logger.log(f"Found {len(branches)} branches across all projects")
-            avg_branches = len(branches) / len(projects) if projects else 0
-            stage_tracker.end_stage(
-                "Stage 2: Discovering Branches",
-                total_branches=len(branches),
-                avg_branches_per_project=f"{avg_branches:.1f}"
-            )
-            
-            # ========================================
-            # Stage 3: Find Latest SCA Scans
-            # ========================================
-            stage_tracker.start_stage("Stage 3: Finding Latest SCA Scans")
-            debug_logger.log(f"Starting Stage 3: Scan Finding for {len(branches)} branches")
-            
-            progress_bar = progress_tracker.create_bar(len(branches), "Finding SCA scans", "branches")
-            
-            scan_finder = ScanFinder(config, auth_manager, api_client, progress_tracker, debug_logger)
-            scans = scan_finder.execute(branches, exception_reporter)
-            
-            progress_tracker.close()
-            
-            if not scans:
-                print("No SCA scans found. Exiting.")
-                debug_logger.log("ERROR: No SCA scans found")
-                debug_logger.close()
-                sys.exit(0)
-            
-            debug_logger.log(f"Found {len(scans)} SCA scans")
-            stage_tracker.end_stage(
-                "Stage 3: Finding Latest SCA Scans",
-                scans_found=len(scans),
-                no_sca_scans=len(branches) - len(scans)
-            )
-        
-        # ========================================
-        # Stage 4: Generate SCA Reports
-        # ========================================
-        stage_tracker.start_stage("Stage 4: Generating SCA Reports")
-        debug_logger.log(f"Starting Stage 4: Report Generation for {len(scans)} scans")
-        
-        progress_bar = progress_tracker.create_bar(len(scans), "Generating reports", "scans")
-        
-        report_generator = ReportGenerator(config, auth_manager, api_client, progress_tracker, debug_logger)
-        report_metadata = report_generator.execute(scans, file_manager, exception_reporter)
-        
-        progress_tracker.close()
-        
-        if not report_metadata:
-            print("No reports generated. Exiting.")
-            debug_logger.log("ERROR: No reports generated successfully")
+
+        # Stage 1: Discover projects
+        stage_tracker.start_stage("Stage 1: Discovering Projects")
+        debug_logger.log("Starting Stage 1: Project Discovery")
+        project_discovery = ProjectDiscovery(config, auth_manager, api_client, progress_tracker, debug_logger)
+        projects = project_discovery.execute()
+        if not projects:
+            print("No projects found. Exiting.")
+            debug_logger.log("ERROR: No projects found")
             debug_logger.close()
             sys.exit(0)
-        
-        debug_logger.log(f"Generated {len(report_metadata)} reports, {len(scans) - len(report_metadata)} failed")
-        stage_tracker.end_stage(
-            "Stage 4: Generating SCA Reports",
-            reports_generated=len(report_metadata),
-            reports_failed=len(scans) - len(report_metadata)
-        )
-        
-        # ========================================
-        # Stage 5: Merge All Reports
-        # ========================================
-        stage_tracker.start_stage("Stage 5: Merging Reports")
-        debug_logger.log(f"Starting Stage 5: Data Merging for {len(report_metadata)} reports")
-        
-        progress_bar = progress_tracker.create_bar(len(report_metadata), "Merging reports", "files")
-        
-        data_merger = DataMerger(config, auth_manager, api_client, progress_tracker, debug_logger)
-        result = data_merger.execute(
-            report_metadata, 
-            file_manager, 
-            csv_streamer,
-            exception_reporter
-        )
-        
+        debug_logger.log("Found " + str(len(projects)) + " projects")
+        stage_tracker.end_stage("Stage 1: Discovering Projects", total_projects=len(projects))
+
+        # Stage 2: Find latest secrets scan per project
+        stage_tracker.start_stage("Stage 2: Finding Latest Secrets Scans")
+        debug_logger.log("Starting Stage 2: Secrets Scan Finding for " + str(len(projects)) + " projects")
+        progress_bar = progress_tracker.create_bar(len(projects), "Finding secrets scans", "projects")
+        scan_finder = SecretsScanFinder(config, auth_manager, api_client, progress_tracker, debug_logger)
+        scans = scan_finder.execute(projects, exception_reporter)
         progress_tracker.close()
-        
-        # Handle both old and new return formats for backward compatibility
-        if len(result) == 4:
-            output_path, total_rows, files_processed, files_failed = result
-            total_packages_before_filter = 0
-            packages_filtered_out = 0
-        else:
-            output_path, total_rows, files_processed, files_failed, total_packages_before_filter, packages_filtered_out = result
-        
-        debug_logger.log(f"Merged {total_rows:,} packages from {files_processed} files ({files_failed} failed)")
+        if not scans:
+            print("No secrets scans found. Exiting.")
+            debug_logger.log("ERROR: No secrets scans found")
+            debug_logger.close()
+            sys.exit(0)
+        debug_logger.log("Found " + str(len(scans)) + " secrets scans")
         stage_tracker.end_stage(
-            "Stage 5: Merging Reports",
-            total_packages=total_rows,
-            files_processed=files_processed,
-            files_failed=files_failed,
-            output_file=output_path
+            "Stage 2: Finding Latest Secrets Scans",
+            scans_found=len(scans),
+            projects_without_scan=len(projects) - len(scans)
         )
-        
-        # ========================================
+
+        # Stage 3: Collect secrets results per scan
+        stage_tracker.start_stage("Stage 3: Collecting Secrets Results")
+        debug_logger.log("Starting Stage 3: Results collection for " + str(len(scans)) + " scans")
+        progress_bar = progress_tracker.create_bar(len(scans), "Collecting results", "scans")
+        results_collector = SecretsResultsCollector(config, auth_manager, api_client, progress_tracker, debug_logger)
+        results_per_scan = results_collector.execute(scans, exception_reporter)
+        progress_tracker.close()
+        total_secrets = sum(len(rows) for _, rows in results_per_scan)
+        debug_logger.log("Collected " + str(total_secrets) + " secrets from " + str(len(results_per_scan)) + " scans")
+        stage_tracker.end_stage("Stage 3: Collecting Secrets Results", total_secrets=total_secrets, scans_processed=len(results_per_scan))
+
+        # Stage 4: Write CSV
+        stage_tracker.start_stage("Stage 4: Writing CSV")
+        output_path = file_manager.get_output_file_path()
+        debug_logger.log("Writing CSV to " + output_path)
+        total_rows = write_secrets_csv(output_path, results_per_scan)
+        stage_tracker.end_stage("Stage 4: Writing CSV", total_rows=total_rows, output_file=output_path)
+
         # Cleanup
-        # ========================================
         if config.temp_file_cleanup:
-            print("\nCleaning up temporary files...")
-            debug_logger.log("Cleaning up temporary files...")
             file_manager.cleanup_temp_files()
-        
-        # ========================================
-        # Generate Exception Report
-        # ========================================
+
+        # Report and summary
         elapsed_time = time.time() - start_time
         hours = int(elapsed_time // 3600)
         minutes = int((elapsed_time % 3600) // 60)
         seconds = int(elapsed_time % 60)
-        
-        # Update report statistics (handle retry mode)
+        execution_time = f"{hours}h {minutes}m {seconds}s"
+
         exception_reporter.update_stats(
-            total_projects=len(projects) if not args.retry_failed else 0,
-            total_branches=len(branches) if not args.retry_failed else 0,
+            total_projects=len(projects),
             scans_found=len(scans),
-            scans_not_found=len(branches) - len(scans) if not args.retry_failed else 0,
-            reports_generated=len(report_metadata),
-            reports_failed=len(scans) - len(report_metadata),
-            packages_merged=total_rows,
-            files_processed=files_processed,
-            files_failed=files_failed,
-            packages_filtered_out=packages_filtered_out,
-            total_packages_before_filter=total_packages_before_filter,
-            execution_time=f"{hours}h {minutes}m {seconds}s",
+            scans_not_found=len(projects) - len(scans),
+            secrets_count=total_rows,
+            execution_time=execution_time,
             output_file=output_path,
             output_size=get_file_size(output_path)
         )
-        
         report_path = exception_reporter.generate_report(output_path)
-        failed_csv_path = exception_reporter.generate_failed_reports_csv(output_path)
-        
-        # Log final statistics
-        debug_logger.log("="*120)
+
+        debug_logger.log("=" * 120)
         debug_logger.log("EXECUTION COMPLETED")
-        debug_logger.log(f"Total projects: {len(projects) if not args.retry_failed else 'N/A (retry mode)'}")
-        debug_logger.log(f"Total branches: {len(branches) if not args.retry_failed else 'N/A (retry mode)'}")
-        debug_logger.log(f"Scans found: {len(scans)}")
-        debug_logger.log(f"Reports generated: {len(report_metadata)}")
-        debug_logger.log(f"Reports failed: {len(scans) - len(report_metadata)}")
-        debug_logger.log(f"Total packages: {total_rows:,}")
-        debug_logger.log(f"Execution time: {hours}h {minutes}m {seconds}s")
-        debug_logger.log(f"Output file: {output_path}")
-        if failed_csv_path:
-            debug_logger.log(f"Failed reports CSV: {failed_csv_path}")
-        debug_logger.log("="*120)
-        
-        # Close debug logger
+        debug_logger.log("Total projects: " + str(len(projects)))
+        debug_logger.log("Scans found: " + str(len(scans)))
+        debug_logger.log("Total secrets: " + str(total_rows))
+        debug_logger.log("Execution time: " + execution_time)
+        debug_logger.log("Output file: " + output_path)
+        debug_logger.log("=" * 120)
         debug_logger.close()
-        
-        # ========================================
-        # Final Summary
-        # ========================================
-        
-        print("\n" + "="*120)
-        if args.retry_failed:
-            print("RETRY EXECUTION SUMMARY")
-        else:
-            print("EXECUTION SUMMARY")
-        print("="*120)
-        print(f"✓ Successfully completed!")
-        print(f"\nStatistics:")
-        if not args.retry_failed:
-            print(f"  - Total projects: {len(projects)}")
-            print(f"  - Total branches: {len(branches)}")
-            print(f"  - Branches with SCA: {len(scans)}")
-        else:
-            print(f"  - Retry attempts: {len(scans)}")
-        print(f"  - Reports generated: {len(report_metadata)}")
-        print(f"  - Reports failed: {len(scans) - len(report_metadata)}")
-        print(f"  - Total packages: {total_rows:,}")
-        if packages_filtered_out > 0:
-            print(f"  - Packages filtered out: {packages_filtered_out:,}")
-            print(f"  - Total packages before filtering: {total_packages_before_filter:,}")
-        print(f"\nOutput:")
-        print(f"  - Data File: {output_path}")
-        print(f"  - Size: {get_file_size(output_path)}")
-        print(f"  - Report File: {report_path}")
-        print(f"  - Debug Log: {debug_log_path}")
-        if failed_csv_path:
-            print(f"  - Failed Reports: {failed_csv_path}")
-            if not args.retry_failed:
-                print(f"\n💡 Tip: Retry failed reports using: --retry-failed {failed_csv_path}")
-        print(f"\nExecution time: {hours}h {minutes}m {seconds}s")
-        print("="*120)
-        
+
+        print("\n" + "=" * 120)
+        print("EXECUTION SUMMARY")
+        print("=" * 120)
+        print("Successfully completed!")
+        print("\nStatistics:")
+        print("  - Total projects:", len(projects))
+        print("  - Scans with secrets:", len(scans))
+        print("  - Total secrets:", total_rows)
+        print("\nOutput:")
+        print("  - Data File:", output_path)
+        print("  - Size:", get_file_size(output_path))
+        print("  - Report File:", report_path)
+        print("  - Debug Log:", debug_log_path)
+        print("\nExecution time:", execution_time)
+        print("=" * 120)
+
     except KeyboardInterrupt:
         print("\n\nOperation cancelled by user.")
         if 'debug_logger' in locals():
@@ -413,39 +226,18 @@ def main():
             debug_logger.close()
         sys.exit(1)
     except Exception as e:
-        print(f"\nError: {e}")
+        print("\nError:", e)
         if 'debug_logger' in locals():
-            debug_logger.log(f"FATAL ERROR: {e}")
+            debug_logger.log("FATAL ERROR: " + str(e))
             if config.debug:
                 import traceback
-                debug_logger.log(f"Traceback: {traceback.format_exc()}")
+                debug_logger.log(traceback.format_exc())
             debug_logger.close()
         elif config.debug:
             import traceback
             traceback.print_exc()
         sys.exit(1)
 
-def get_file_size(file_path):
-    """Get human-readable file size.
-    
-    Args:
-        file_path (str): Path to file
-        
-    Returns:
-        str: Formatted file size
-    """
-    try:
-        import os
-        size_bytes = os.path.getsize(file_path)
-        
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size_bytes < 1024.0:
-                return f"{size_bytes:.1f} {unit}"
-            size_bytes /= 1024.0
-        
-        return f"{size_bytes:.1f} TB"
-    except:
-        return "Unknown"
 
 if __name__ == "__main__":
-    main() 
+    main()
