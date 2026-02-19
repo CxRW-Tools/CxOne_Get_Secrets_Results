@@ -5,8 +5,15 @@ from src.operations.base import Operation
 from src.models.scan import Scan
 
 def _is_secrets_scan(scan_data):
-    """True if scan has status Completed and metadata.configs has microengines with 2ms true."""
-    if scan_data.get('status') != 'Completed':
+    """True if microengines status is Completed in statusDetails and metadata.configs has microengines with 2ms true."""
+    status_details = scan_data.get('statusDetails') or []
+    microengines_completed = False
+    for detail in status_details:
+        if detail.get('name', '').lower() == 'microengines':
+            if detail.get('status') == 'Completed':
+                microengines_completed = True
+            break
+    if not microengines_completed:
         return False
     metadata = scan_data.get('metadata') or {}
     configs = metadata.get('configs') or []
@@ -75,7 +82,7 @@ class SecretsScanFinder(Operation):
         """Return the most recent scan for this project that qualifies as a secrets scan."""
         params = {
             'project-id': project.id,
-            'statuses': 'Completed',
+            'statuses': 'Completed,Partial',
             'sort': '-created_at',
             'limit': self.config.page_size,
             'offset': 0

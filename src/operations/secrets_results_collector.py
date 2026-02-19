@@ -6,6 +6,7 @@ from src.operations.base import Operation
 SECRETS_TYPE = 'sscs-secret-detection'
 CSV_HEADER = ['projectId', 'projectName', 'scanId', 'id', 'firstFoundAt', 'foundAt', 'ruleName', 'fileName', 'line']
 
+
 def _result_to_row(scan, item):
     """Build a CSV row dict from a single result item and scan context."""
     data = item.get('data') or {}
@@ -20,6 +21,7 @@ def _result_to_row(scan, item):
         'fileName': data.get('fileName', ''),
         'line': data.get('line', ''),
     }
+
 
 class SecretsResultsCollector(Operation):
     """For each scan, fetch /api/results and filter sscs-secret-detection; produce rows for CSV."""
@@ -53,11 +55,12 @@ class SecretsResultsCollector(Operation):
                         continue
                     results_per_scan.append((scan, rows))
                     total_secrets += len(rows)
+                    num_results = len(rows)
                     if self.logger:
-                        self.logger.log("  " + scan.project_name + " (scan " + scan.scan_id + "): " + str(len(rows)) + " secrets")
+                        self.logger.log("  " + scan.project_name + " (scan " + scan.scan_id + "): " + str(num_results) + " results (total so far: " + str(total_secrets) + ")")
                     if self.progress:
                         self.progress.update(1)
-                        self.progress.set_postfix(secrets=total_secrets)
+                        self.progress.set_postfix(secrets=total_secrets, last_scan_results=num_results)
                 except Exception as e:
                     error_count += 1
                     if self.logger:
@@ -68,9 +71,9 @@ class SecretsResultsCollector(Operation):
                         self.progress.update(1)
 
         if self.logger:
-            self.logger.log("Collected " + str(total_secrets) + " secrets from " + str(len(results_per_scan)) + " scans (" + str(error_count) + " errors)")
+            self.logger.log("Collected " + str(total_secrets) + " total results from " + str(len(results_per_scan)) + " scans (" + str(error_count) + " errors)")
         if self.config.debug:
-            print("Collected", total_secrets, "secrets from", len(results_per_scan), "scans")
+            print("Collected", total_secrets, "total results from", len(results_per_scan), "scans")
         return results_per_scan
 
     def _fetch_secrets_for_scan(self, scan, exception_reporter):
@@ -84,7 +87,11 @@ class SecretsResultsCollector(Operation):
                 return None
             rows = []
             for item in all_items:
-                if item.get('type') != SECRETS_TYPE:
+                if not isinstance(item, dict):
+                    continue
+                raw_type = item.get('type')
+                item_type = (raw_type if isinstance(raw_type, str) else str(raw_type or '')).strip()
+                if item_type != SECRETS_TYPE:
                     continue
                 rows.append(_result_to_row(scan, item))
             return rows
