@@ -16,9 +16,14 @@ class DebugLogger:
         except Exception as e:
             print("Warning: Could not open debug log file:", e)
 
-    def log(self, message):
+    def log(self, message, project_name=None, scan_id=None):
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        log_line = "[" + timestamp + "] " + message
+        prefix = "[" + timestamp + "]"
+        if project_name is not None:
+            prefix += " " + str(project_name)
+        if scan_id is not None:
+            prefix += " " + str(scan_id)
+        log_line = prefix + " " + message
         if self.file_handle:
             try:
                 self.file_handle.write(log_line + "\n")

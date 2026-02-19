@@ -49,18 +49,24 @@ class SecretsResultsCollector(Operation):
             for future in as_completed(future_to_scan):
                 scan = future_to_scan[future]
                 try:
-                    rows = future.result()
-                    if rows is None:
+                    result = future.result()
+                    if result is None:
                         error_count += 1
                         continue
+                    rows, total_in_scan = result
                     results_per_scan.append((scan, rows))
-                    total_secrets += len(rows)
-                    num_results = len(rows)
+                    secrets_in_scan = len(rows)
+                    total_secrets += secrets_in_scan
                     if self.logger:
-                        self.logger.log("  " + scan.project_name + " (scan " + scan.scan_id + "): " + str(num_results) + " results (total so far: " + str(total_secrets) + ")")
+                        self.logger.log(
+                            "  " + scan.project_name + " (scan " + scan.scan_id + "): "
+                            + "total results from scan: " + str(total_in_scan) + "; "
+                            + "secrets in scan: " + str(secrets_in_scan) + "; "
+                            + "total secrets so far: " + str(total_secrets)
+                        )
                     if self.progress:
                         self.progress.update(1)
-                        self.progress.set_postfix(secrets=total_secrets, last_scan_results=num_results)
+                        self.progress.set_postfix(secrets=total_secrets, last_scan_results=secrets_in_scan)
                 except Exception as e:
                     error_count += 1
                     if self.logger:
@@ -77,14 +83,22 @@ class SecretsResultsCollector(Operation):
         return results_per_scan
 
     def _fetch_secrets_for_scan(self, scan, exception_reporter):
-        """Fetch all paginated results for scan, filter by type sscs-secret-detection. Returns list of row dicts or None on error."""
+        """Fetch all paginated results for scan, filter by type sscs-secret-detection.
+        Returns (rows, total_results_in_scan) or None on error.
+        """
         try:
             params = {'scan-id': scan.scan_id}
-            all_items = self.api_client.get_paginated('/api/results', params=params)
+            all_items = self.api_client.get_paginated(
+                '/api/results',
+                params=params,
+                project_name=scan.project_name,
+                scan_id=scan.scan_id
+            )
             if all_items is None:
                 if exception_reporter:
                     exception_reporter.add_results_error(scan.project_name, scan.scan_id, "API returned no data")
                 return None
+            total_in_scan = len(all_items)
             rows = []
             for item in all_items:
                 if not isinstance(item, dict):
@@ -94,7 +108,7 @@ class SecretsResultsCollector(Operation):
                 if item_type != SECRETS_TYPE:
                     continue
                 rows.append(_result_to_row(scan, item))
-            return rows
+            return (rows, total_in_scan)
         except Exception as e:
             if exception_reporter:
                 exception_reporter.add_results_error(scan.project_name, scan.scan_id, str(e))
