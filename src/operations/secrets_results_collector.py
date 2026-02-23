@@ -4,7 +4,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.operations.base import Operation
 
 SECRETS_TYPE = 'sscs-secret-detection'
-CSV_HEADER = ['projectId', 'projectName', 'scanId', 'id', 'firstFoundAt', 'foundAt', 'ruleName', 'fileName', 'line']
+CSV_HEADER = ['projectId', 'projectName', 'scanId', 'id', 'firstFoundAt', 'foundAt', 'severity', 'ruleName', 'fileName', 'line']
+
+
+def _severity_display(raw):
+    """Return severity as title case (e.g. HIGH -> High)."""
+    if not isinstance(raw, str):
+        return str(raw) if raw is not None else ''
+    return raw.title()
 
 
 def _result_to_row(scan, item):
@@ -17,6 +24,7 @@ def _result_to_row(scan, item):
         'id': item.get('id', ''),
         'firstFoundAt': item.get('firstFoundAt', ''),
         'foundAt': item.get('foundAt', ''),
+        'severity': _severity_display(item.get('severity')),
         'ruleName': data.get('ruleName', ''),
         'fileName': data.get('fileName', ''),
         'line': data.get('line', ''),
