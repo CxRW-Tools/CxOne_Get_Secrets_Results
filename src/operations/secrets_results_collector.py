@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.operations.base import Operation
 
 SECRETS_TYPE = 'sscs-secret-detection'
-CSV_HEADER = ['projectId', 'projectName', 'scanId', 'id', 'firstFoundAt', 'foundAt', 'severity', 'ruleName', 'fileName', 'line']
+CSV_HEADER = ['projectId', 'projectName', 'branch', 'scanId', 'id', 'firstFoundAt', 'foundAt', 'severity', 'ruleName', 'fileName', 'line']
 
 
 def _severity_display(raw):
@@ -20,6 +20,7 @@ def _result_to_row(scan, item):
     return {
         'projectId': scan.project_id,
         'projectName': scan.project_name,
+        'branch': scan.branch_name or '',
         'scanId': scan.scan_id,
         'id': item.get('id', ''),
         'firstFoundAt': item.get('firstFoundAt', ''),
