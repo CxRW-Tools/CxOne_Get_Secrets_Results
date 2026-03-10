@@ -9,7 +9,7 @@ This tool:
 1. **Discovers all projects** in your CxOne tenant (`GET /api/projects`).
 2. **Finds the latest secrets scan per project** — For each project, the most recent **Completed** scan that has secrets enabled (microengines config with `2ms: "true"`) is selected via `GET /api/scans`.
 3. **Collects secrets results** — For each selected scan, fetches all results from `GET /api/results?scan-id=...` (paginated) and keeps only findings with type `sscs-secret-detection`.
-4. **Writes one CSV** — Single file with one row per secret: **projectId, projectName, scanId, id, firstFoundAt, foundAt, ruleName, fileName, line** (ruleName, fileName, line come from each result’s `data`).
+4. **Writes one CSV** — Single file with one row per secret: **projectId, projectName, branch, scanId, id, firstFoundAt, foundAt, severity, ruleName, fileName, line** (severity is title-cased from the API; ruleName, fileName, line come from each result’s `data`).
 
 ## Features
 
@@ -117,17 +117,19 @@ The tool writes files under the output directory (default `./output`):
 
 Columns:
 
-| Column       | Description                                      |
-|-------------|---------------------------------------------------|
-| projectId   | Project ID                                       |
-| projectName | Project name                                     |
-| scanId      | Scan ID used for results                          |
-| id          | Result ID                                        |
-| firstFoundAt| When the secret was first found                   |
-| foundAt     | When the secret was found in this scan            |
-| ruleName    | Secret rule name (e.g. Authenticated-Url)         |
-| fileName    | File path                                        |
-| line        | Line number                                      |
+| Column       | Description                                                |
+|-------------|-------------------------------------------------------------|
+| projectId   | Project ID                                                  |
+| projectName | Project name                                                |
+| branch      | Branch that was scanned                                    |
+| scanId      | Scan ID used for results                                   |
+| id          | Result ID                                                  |
+| firstFoundAt| When the secret was first found                             |
+| foundAt     | When the secret was found in this scan                     |
+| severity    | Severity (title case, e.g. High, Critical)                  |
+| ruleName    | Secret rule name (e.g. Generic-Api-Key)                    |
+| fileName    | File path                                                  |
+| line        | Line number                                                |
 
 ### 2. Exception report (TXT)
 
